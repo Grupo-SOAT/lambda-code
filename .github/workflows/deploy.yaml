@@ -1,9 +1,7 @@
 name: Deploy Lambda
 
 on:
-  push:
-    branches:
-      - "feature/hello-world"
+  workflow_dispatch:
 
 jobs:
 
