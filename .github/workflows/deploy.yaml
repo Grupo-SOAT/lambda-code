@@ -61,24 +61,24 @@ jobs:
             "dist/oficina-mecanica-validator-${{ github.sha }}.zip" \
             "s3://lambda-code-archive-oficina-mecanica/oficina-mecanica-validator-${{ github.sha }}.zip"
 
-      # - name: Trigger Infra Pipeline
-      #   env:
-      #     GH_TOKEN: ${{ secrets.PAT_REPO_INFRA_LAMBDA }}
-      #     LAMBDA_HASH: ${{ steps.lambda_hash.outputs.source_hash }}
-      #     LAMBDA_KEY: oficina-mecanica-validator-${{ github.sha }}.zip
-      #     INFRA_REPO: k8s-infra-oficina-mecanica
-      #     ORG_NAME: Grupo-SOAT
-      #   run: |
-      #     curl -L \
-      #       -X POST \
-      #       -H "Accept: application/vnd.github+json" \
-      #       -H "Authorization: Bearer ${GH_TOKEN}" \
-      #       "https://api.github.com/repos/${ORG_NAME}/${INFRA_REPO}/dispatches" \
-      #       -d '{
-      #         "event_type": "lambda-updated",
-      #         "client_payload": {
-      #           "lambda_hash": "'"${LAMBDA_HASH}"'",
-      #           "lambda_key": "'"${LAMBDA_KEY}"'"
-      #         }
-      #       }'
+      - name: Trigger Infra Pipeline
+        env:
+          GH_TOKEN: ${{ secrets.PAT_REPO_INFRA_LAMBDA }}
+          LAMBDA_HASH: ${{ steps.lambda_hash.outputs.source_hash }}
+          LAMBDA_KEY: oficina-mecanica-validator-${{ github.sha }}.zip
+          INFRA_REPO: k8s-infra-oficina-mecanica
+          ORG_NAME: Grupo-SOAT
+        run: |
+          curl -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${ORG_NAME}/${INFRA_REPO}/dispatches" \
+            -d '{
+              "event_type": "lambda-updated",
+              "client_payload": {
+                "lambda_hash": "'"${LAMBDA_HASH}"'",
+                "lambda_key": "'"${LAMBDA_KEY}"'"
+              }
+            }'
       
