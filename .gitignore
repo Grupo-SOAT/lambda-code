@@ -1,0 +1,4 @@
+target/
+.terraform/
+*.class
+dependency-reduced-pom.xml
