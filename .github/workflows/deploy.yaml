@@ -1,0 +1,82 @@
+name: Deploy Lambda
+
+on:
+  workflow_dispatch:
+
+jobs:
+
+  deploy-lambda:
+
+    name: Deploy Lambda
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Build Lambda
+        run: mvn clean package
+
+      - name: Package Lambda
+        run: |
+          mkdir -p dist
+
+          cp target/*.jar dist/
+
+          cd dist
+
+          zip oficina-mecanica-validator-${{ github.sha }}.zip *.jar
+
+      - name: Calculate Lambda Source Hash
+        id: lambda_hash
+        run: |
+          HASH=$(openssl dgst -sha256 -binary "dist/oficina-mecanica-validator-${{ github.sha }}.zip" | base64 -w 0)
+
+          echo "Lambda source hash: $HASH"
+
+          echo "source_hash=$HASH" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Lambda Artifact to S3
+        run: |
+          aws s3 cp \
+            "dist/oficina-mecanica-validator-${{ github.sha }}.zip" \
+            "s3://lambda-code-archive-oficina-mecanica/oficina-mecanica-validator-${{ github.sha }}.zip"
+
+      - name: Trigger Infra Pipeline
+        env:
+          GH_TOKEN: ${{ secrets.PAT_REPO_INFRA_LAMBDA }}
+          LAMBDA_HASH: ${{ steps.lambda_hash.outputs.source_hash }}
+          LAMBDA_KEY: oficina-mecanica-validator-${{ github.sha }}.zip
+          INFRA_REPO: k8s-infra-oficina-mecanica
+          ORG_NAME: Grupo-SOAT
+        run: |
+          curl -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${ORG_NAME}/${INFRA_REPO}/dispatches" \
+            -d '{
+              "event_type": "lambda-updated",
+              "client_payload": {
+                "lambda_hash": "'"${LAMBDA_HASH}"'",
+                "lambda_key": "'"${LAMBDA_KEY}"'"
+              }
+            }'
+            
