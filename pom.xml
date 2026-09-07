@@ -11,8 +11,7 @@
 
   <name>lambda-code</name>
   <description>
-    Function Serverless (
-    Lambda) do Tech Challenge Fase 3: valida CPF de
+    Function Serverless (AWS Lambda) do Tech Challenge Fase 3: valida CPF de
     clientes, emite JWT compativel com o monolito (mnl-oficina-mecanica) e
     faz proxy das demais rotas para o backend no EKS.
   </description>
