@@ -37,3 +37,7 @@ build/
 .claude/
 
 /k8s-dev
+target/
+.terraform/
+*.class
+dependency-reduced-pom.xml
