@@ -57,7 +57,7 @@ jobs:
         run: |
           aws s3 cp \
             "dist/oficina-mecanica-validator-${{ github.sha }}.zip" \
-            "s3://lambda-code-archive-oficina-mecanica/oficina-mecanica-validator-${{ github.sha }}.zip"
+            "s3://${{ vars.TF_LAMBDA_BUCKET }}/oficina-mecanica-validator-${{ github.sha }}.zip"
 
       - name: Trigger Infra Pipeline
         env:
