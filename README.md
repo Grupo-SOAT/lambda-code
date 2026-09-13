@@ -4,7 +4,10 @@ AWS Lambda responsável pela camada serverless de entrada da aplicação **Ofici
 
 A função atua integrada ao **Amazon API Gateway**, ao **Amazon RDS PostgreSQL** e ao backend da aplicação executado no **Amazon EKS**.
 
-Sua principal responsabilidade é realizar a autenticação de clientes por CPF. As demais requisições são encaminhadas para o backend através de um proxy HTTP transparente.
+Este repositório contém duas funções:
+
+* **`ValidatorHandler`** — autentica clientes por CPF (`POST /auth/cpf`) e emite o JWT;
+* **`AuthorizerHandler`** — Lambda Authorizer do API Gateway: valida o JWT nas demais rotas, que são repassadas **direto para o backend** por uma integração `HTTP_PROXY` do próprio API Gateway (a Lambda não faz mais proxy de nenhuma requisição de negócio).
 
 ---
 
@@ -19,7 +22,7 @@ Sua principal responsabilidade é realizar a autenticação de clientes por CPF.
 * [Variáveis de ambiente](#-variáveis-de-ambiente)
 * [AWS Secrets Manager](#-aws-secrets-manager)
 * [JWT](#-jwt)
-* [Proxy para o backend](#-proxy-para-o-backend)
+* [Lambda Authorizer](#-lambda-authorizer)
 * [Execução local](#-execução-local)
 * [Testes](#-testes)
 * [Build e empacotamento](#-build-e-empacotamento)
@@ -33,7 +36,7 @@ Sua principal responsabilidade é realizar a autenticação de clientes por CPF.
 
 ## 🏗️ Arquitetura
 
-A Lambda funciona como uma camada intermediária entre o cliente e os serviços da aplicação.
+O API Gateway só invoca a `ValidatorHandler` na rota de autenticação. Nas demais rotas ele fala **direto** com o backend (integração `HTTP_PROXY`), usando a `AuthorizerHandler` apenas para decidir se autoriza a chamada.
 
 ```text
                     ┌─────────────────────┐
@@ -44,35 +47,34 @@ A Lambda funciona como uma camada intermediária entre o cliente e os serviços 
                     ┌─────────────────────┐
                     │   Amazon API        │
                     │      Gateway        │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │    AWS Lambda       │
-                    │   ValidatorHandler  │
-                    └───────┬─────┬───────┘
-                            │     │
-              POST /auth/cpf     │ Demais rotas
-                            │     │
-                            ▼     ▼
-                 ┌────────────┐  ┌─────────────────┐
-                 │ PostgreSQL │  │ Backend no EKS   │
-                 │   owners   │  │ Oficina Mecânica │
-                 └────────────┘  └─────────────────┘
-                            │
-                            ▼
-                     JWT do cliente
+                    └───────┬──────┬──────┘
+                            │      │
+              POST /auth/cpf      │ Demais rotas (HTTP_PROXY)
+                            │      │
+                            ▼      ├──────────────────┐
+                 ┌─────────────────┐│                  ▼
+                 │ ValidatorHandler││       ┌────────────────────┐
+                 └───────┬─────────┘│       │ AuthorizerHandler  │
+                         │          │       │ (valida o JWT)     │
+                         ▼          │       └────────────────────┘
+                 ┌────────────┐     │
+                 │ PostgreSQL │     ▼
+                 │   owners   │  ┌─────────────────┐
+                 └────────────┘  │ Backend no EKS   │
+                                  │ Oficina Mecânica │
+                                  └─────────────────┘
 ```
 
 ### Componentes envolvidos
 
-| Componente                | Responsabilidade                            |
-| ------------------------- | ------------------------------------------- |
-| **API Gateway**           | Ponto de entrada HTTP da aplicação          |
-| **AWS Lambda**            | Validação de CPF, autenticação e proxy      |
-| **Amazon RDS PostgreSQL** | Consulta dos clientes                       |
-| **AWS Secrets Manager**   | Armazenamento das credenciais e segredo JWT |
-| **Amazon EKS**            | Execução do backend principal               |
+| Componente                | Responsabilidade                                                           |
+| ------------------------- | --------------------------------------------------------------------------- |
+| **API Gateway**           | Ponto de entrada HTTP; roteia `/auth` pra Lambda, o resto direto pro backend |
+| **`ValidatorHandler`**    | Validação de CPF e emissão do JWT                                          |
+| **`AuthorizerHandler`**   | Validação do JWT nas rotas de negócio (Lambda Authorizer)                  |
+| **Amazon RDS PostgreSQL** | Consulta dos clientes                                                       |
+| **AWS Secrets Manager**   | Armazenamento das credenciais e segredo JWT                                |
+| **Amazon EKS**            | Execução do backend principal                                               |
 | **GitHub Actions**        | Automação do build e deploy da Lambda       |
 | **Amazon S3**             | Armazenamento do artefato da Lambda         |
 
@@ -80,9 +82,9 @@ A Lambda funciona como uma camada intermediária entre o cliente e os serviços 
 
 ## 🎯 Responsabilidades
 
-A Lambda possui dois comportamentos principais.
+Este repositório implementa duas funções com responsabilidades separadas.
 
-### 1. Autenticação por CPF
+### 1. Autenticação por CPF (`ValidatorHandler`)
 
 Para:
 
@@ -102,19 +104,15 @@ a função:
 
 A implementação do algoritmo de CPF foi mantida compatível com o algoritmo utilizado pelo monólito da aplicação.
 
-### 2. Proxy para o backend
+### 2. Autorização das rotas de negócio (`AuthorizerHandler`)
 
-Para qualquer outra rota, a Lambda encaminha a requisição para o backend configurado em `BACKEND_URL`.
+Para qualquer outra rota, o API Gateway já fala direto com o backend (integração `HTTP_PROXY`, configurada em `modules/aws/gateway` no repo `k8s-infra-oficina-mecanica`) - a Lambda não participa dessa chamada. Antes de liberar a rota, o Gateway invoca a `AuthorizerHandler`:
 
-O proxy preserva:
+1. lê o header `Authorization: Bearer <token>`;
+2. valida a assinatura e a expiração do JWT;
+3. responde `{ "isAuthorized": true, "context": {...} }` (libera) ou `{ "isAuthorized": false }` (nega, o Gateway responde `403`).
 
-* método HTTP;
-* caminho;
-* query parameters;
-* corpo da requisição;
-* headers compatíveis.
-
-Headers hop-by-hop como `Host`, `Content-Length` e `Connection` são removidos antes do encaminhamento.
+O API Gateway cacheia essa decisão por `authorizer_result_ttl_in_seconds` (0s (desativado por padrão) por padrão), então o mesmo token não invoca a Lambda a cada chamada.
 
 ---
 
@@ -197,17 +195,17 @@ lambda-code/
 │   │   └── java/
 │   │       └── br/com/oficina/lambda/
 │   │           ├── ValidatorHandler.java
+│   │           ├── AuthorizerHandler.java
 │   │           ├── CpfValidator.java
 │   │           ├── JwtService.java
 │   │           ├── OwnerRepository.java
-│   │           ├── HttpBackendProxyService.java
 │   │           └── ...
 │   │
 │   └── test/
 │       └── java/
 │           └── br/com/oficina/lambda/
 │               ├── CpfValidatorTest.java
-│               ├── HttpBackendProxyServiceTest.java
+│               ├── AuthorizerHandlerTest.java
 │               ├── JwtServiceTest.java
 │               └── ValidatorHandlerTest.java
 │
@@ -399,54 +397,48 @@ O segredo utilizado para assinatura é recuperado do AWS Secrets Manager.
 
 ---
 
-## 🔄 Proxy para o backend
+## 🛂 Lambda Authorizer
 
-As requisições que não correspondem a:
-
-```text
-POST /auth/cpf
-```
-
-são encaminhadas para o backend.
-
-Por exemplo:
+As requisições que não correspondem a `POST /auth/cpf` são repassadas pelo próprio API Gateway direto para o backend (integração `HTTP_PROXY`) - a `AuthorizerHandler` só decide se autoriza, ela não vê o corpo nem repassa a chamada.
 
 ```text
 Cliente
    │
    │ GET /owners/123
+   │ Authorization: Bearer <jwt>
    ▼
-API Gateway
+API Gateway ──────► AuthorizerHandler (valida o JWT)
+   │                        │
+   │        isAuthorized: true/false
+   │◄───────────────────────┘
    │
-   ▼
-Lambda
-   │
-   │ GET BACKEND_URL/owners/123
+   │ (se autorizado) GET BACKEND_URL/owners/123
    ▼
 Backend no EKS
 ```
 
-O proxy utiliza o `HttpClient` nativo do Java e possui:
+Evento recebido (formato "simple response", payload 2.0):
 
-* timeout de conexão de 5 segundos;
-* timeout de requisição de 10 segundos;
-* propagação dos headers;
-* propagação do body;
-* propagação do status HTTP;
-* propagação dos headers da resposta.
-
-Caso o backend não possa ser acessado, a Lambda retorna:
-
-```http
-502 Bad Gateway
+```json
+{ "headers": { "authorization": "Bearer eyJhbGciOiJIUzI1NiJ9..." } }
 ```
+
+Resposta em caso de token válido:
 
 ```json
 {
-  "error": "BACKEND_UNAVAILABLE",
-  "message": "Nao foi possivel contatar o backend"
+  "isAuthorized": true,
+  "context": { "sub": "12345678909", "userId": "123", "roles": "CLIENTE" }
 }
 ```
+
+Token ausente, malformado, expirado ou assinado com outro segredo:
+
+```json
+{ "isAuthorized": false }
+```
+
+Nesse caso o próprio API Gateway responde `403` ao cliente, sem a Lambda precisar formatar nenhum corpo de erro.
 
 ---
 
@@ -502,9 +494,9 @@ O projeto possui testes unitários utilizando **JUnit 5** e **Mockito**.
 Entre os componentes testados estão:
 
 * validação de CPF;
-* geração de JWT;
+* geração e verificação de JWT;
 * `ValidatorHandler`;
-* proxy HTTP para o backend.
+* `AuthorizerHandler`.
 
 Para executar:
 
@@ -637,16 +629,6 @@ FROM owners
 WHERE document = ?
 ```
 
-### Headers
-
-O proxy não encaminha headers HTTP hop-by-hop como:
-
-```text
-Host
-Content-Length
-Connection
-```
-
 ### Princípio do menor privilégio
 
 A IAM Role da Lambda deve possuir somente as permissões necessárias para:
@@ -693,7 +675,7 @@ O algoritmo de CPF e a estrutura do JWT foram implementados para manter compatib
 
 ### Backend desacoplado
 
-As demais rotas continuam sendo processadas pelo backend principal, permitindo que a Lambda funcione como uma camada de entrada sem duplicar as regras de negócio da aplicação.
+As rotas de negócio são resolvidas pelo backend principal via integração `HTTP_PROXY` do próprio API Gateway - a Lambda entra só para autenticar (`ValidatorHandler`) e autorizar (`AuthorizerHandler`), sem duplicar nem interceptar as regras de negócio da aplicação.
 
 ---
 
@@ -712,3 +694,20 @@ Este repositório faz parte da solução **Oficina Mecânica – Tech Challenge 
 Este projeto está licenciado sob a licença **MIT**.
 
 Consulte o arquivo [`LICENSE`](./LICENSE) para mais informações.
+
+## Revisão da migração para Authorizer
+
+- Apenas POST /auth/cpf é enviado à ValidatorHandler. POST /auth/login,
+  /auth/chatbot e /auth/change-password continuam no monólito.
+- Rotas protegidas usam os nomes reais da API: owners, vehicles,
+  service-orders, catalog, supplies, suppliers, purchase-orders, users e reporting.
+- O cache do authorizer fica desativado por padrão; a expiração é conferida
+  a cada chamada. O monólito continua validando JWT, papéis e dono do recurso.
+- O ZIP de deploy contém somente lib/lambda-code.jar, com os dois handlers.
+- Publicar o novo artefato antes de aplicar a infraestrutura que referencia
+  AuthorizerHandler; implantar também o controle de dono no monólito.
+- Não foi validado deploy na AWS nesta revisão. Rede entre Lambda e RDS
+  privado permanece pendente por decisão do grupo. Terraform validate não
+  comprova conectividade, permissões IAM nem disponibilidade dos serviços.
+- A consulta atual de cliente verifica existência, não status ativo/inativo:
+  esse requisito ainda depende da evolução do modelo owners.

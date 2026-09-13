@@ -18,8 +18,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -30,8 +28,6 @@ class ValidatorHandlerTest {
     @Mock
     private JwtService jwtService;
     @Mock
-    private BackendProxyService backendProxyService;
-    @Mock
     private Context context;
 
     private ValidatorHandler handler;
@@ -39,7 +35,7 @@ class ValidatorHandlerTest {
     @BeforeEach
     void setUp() {
         lenient().when(context.getLogger()).thenReturn(new NoOpLambdaLogger());
-        handler = new ValidatorHandler(ownerRepository, jwtService, backendProxyService);
+        handler = new ValidatorHandler(ownerRepository, jwtService);
     }
 
     @Test
@@ -99,31 +95,19 @@ class ValidatorHandlerTest {
     }
 
     @Test
-    void forwardsNonAuthRoutesToBackend() {
+    void returns404ForNonAuthRoutes() {
 
-        APIGatewayV2HTTPResponse proxied = APIGatewayV2HTTPResponse.builder().withStatusCode(200).build();
-        when(backendProxyService.forward(any())).thenReturn(proxied);
+        APIGatewayV2HTTPResponse response = handler.handleRequest(requestFor("GET", "/owners/1", null), context);
 
-        APIGatewayV2HTTPEvent event = requestFor("GET", "/owners/1", null);
-
-        APIGatewayV2HTTPResponse response = handler.handleRequest(event, context);
-
-        assertEquals(proxied, response);
-        verify(backendProxyService).forward(event);
+        assertEquals(404, response.getStatusCode());
     }
 
     @Test
-    void getOnAuthPathIsProxiedNotHandledLocally() {
+    void returns404ForGetOnAuthPath() {
 
-        when(backendProxyService.forward(any()))
-                .thenReturn(APIGatewayV2HTTPResponse.builder().withStatusCode(405).build());
+        APIGatewayV2HTTPResponse response = handler.handleRequest(requestFor("GET", "/auth/cpf", null), context);
 
-        APIGatewayV2HTTPEvent event = requestFor("GET", "/auth/cpf", null);
-
-        handler.handleRequest(event, context);
-
-        verify(backendProxyService).forward(event);
-        verify(jwtService, never()).issueClienteToken(any(), any());
+        assertEquals(404, response.getStatusCode());
     }
 
     private static APIGatewayV2HTTPEvent authRequest(String body) {

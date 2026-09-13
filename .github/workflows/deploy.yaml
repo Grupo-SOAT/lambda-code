@@ -36,13 +36,13 @@ jobs:
 
       - name: Package Lambda
         run: |
-          mkdir -p dist
+          mkdir -p dist/lib
 
-          cp target/*.jar dist/
+          cp target/lambda-code.jar dist/lib/
 
           cd dist
 
-          zip oficina-mecanica-validator-${{ github.sha }}.zip *.jar
+          zip -r oficina-mecanica-validator-${{ github.sha }}.zip lib/
 
       - name: Calculate Lambda Source Hash
         id: lambda_hash
