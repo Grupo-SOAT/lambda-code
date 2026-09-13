@@ -93,6 +93,7 @@ public class ValidatorHandler implements RequestHandler<APIGatewayV2HTTPEvent, A
             return Responses.error(404, "CLIENT_NOT_FOUND", "Cliente nao encontrado para o CPF informado");
         }
 
+        if (!owner.get().active()) return Responses.error(403, "CLIENT_INACTIVE", "Cliente inativo");
         String token = jwtService.issueClienteToken(owner.get().document(), owner.get().id());
 
         String body = """

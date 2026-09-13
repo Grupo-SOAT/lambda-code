@@ -641,25 +641,7 @@ A IAM Role da Lambda deve possuir somente as permissões necessárias para:
 
 ## ⚠️ Limitações conhecidas
 
-Atualmente, a tabela `owners` não possui um campo específico indicando se o cliente está ativo.
-
-Por isso, a existência do CPF na tabela é utilizada como indicação de que o cliente pode ser autenticado.
-
-Atualmente a consulta é equivalente a:
-
-```sql
-SELECT owner_id, name, document, email
-FROM owners
-WHERE document = ?
-```
-
-Caso futuramente seja adicionado um campo como:
-
-```text
-active
-```
-
-a consulta poderá ser adaptada para considerar somente clientes ativos.
+A autenticação consulta owners.active e bloqueia clientes inativos. Aplicar a migração documentada antes do deploy.
 
 ---
 
@@ -710,4 +692,33 @@ Consulte o arquivo [`LICENSE`](./LICENSE) para mais informações.
   privado permanece pendente por decisão do grupo. Terraform validate não
   comprova conectividade, permissões IAM nem disponibilidade dos serviços.
 - A consulta atual de cliente verifica existência, não status ativo/inativo:
-  esse requisito ainda depende da evolução do modelo owners.
+  esse requisito foi implementado nesta revisão com owners.active.
+## Conclusão da autenticação por status e publicação
+
+A Lambda agora exige owners.active = true e document_type = CPF. Cliente
+inativo recebe 403 CLIENT_INACTIVE e não recebe token. Banco indisponível
+ou schema sem active falha fechado, sem emitir JWT.
+
+Antes de publicar a Lambda, executar docs/migrations/001-owner-active.sql
+no repositório mnl-oficina-mecanica com a credencial de migração. O script
+é reaplicável e define clientes existentes como ativos. Novos clientes
+nascem ativos. PATCH /owners/{id}/status com {"active":false} ou true é
+restrito a ADMIN. Edições comuns do cadastro preservam o status.
+Tokens já emitidos continuam válidos até expirar (30 minutos); desativar
+bloqueia novas autenticações, não implementa revogação instantânea.
+
+O workflow da Lambda testa PRs e publica automaticamente em push para main
+(producao) e homologacao (homologacao), somente no repositório Grupo-SOAT.
+Configurar os dois GitHub Environments com credenciais AWS e variáveis
+TF_LAMBDA_BUCKET, LAMBDA_VALIDATOR_NAME e LAMBDA_AUTHORIZER_NAME. Usar contas
+ou funções/buckets distintos para não sobrescrever produção. As funções
+precisam existir previamente via Terraform, com o novo artefato para o
+bootstrap. Após isso, o pipeline atualiza código e aguarda ambas as funções.
+Terraform mantém configuração/handlers e ignora alterações posteriores de
+s3_key/source_code_hash, cujo proprietário passa a ser esse pipeline.
+
+A configuração dos Environments e proteção das branches exige administrador
+da organização; a conta usada nesta entrega tem somente leitura nos repos
+originais. Não foram criadas credenciais nem disparados deploys nesta entrega.
+Rede Lambda/RDS privado mantida conforme combinado. A validação AWS permanece
+pendente e não é substituída pelos testes locais.

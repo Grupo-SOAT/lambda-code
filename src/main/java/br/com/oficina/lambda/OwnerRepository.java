@@ -7,15 +7,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Optional;
 
-/**
- * Consulta a tabela {@code owners} do MESMO Postgres usado pelo monolito.
- *
- * <p>Limitacao conhecida: a tabela {@code owners} nao tem uma coluna de
- * status/ativo hoje (ver OwnerEntity.java no monolito), entao "status do
- * cliente" e tratado como existencia do CPF na base. Se um campo
- * {@code active} for adicionado no futuro, basta um {@code AND active = true}
- * na query abaixo.
- */
+/** Consulta parametrizada de existencia e status do cliente. */
 public class OwnerRepository {
 
     private final String jdbcUrl;
@@ -30,7 +22,7 @@ public class OwnerRepository {
 
     public Optional<Owner> findByDocument(String document) throws SQLException {
 
-        String sql = "SELECT owner_id, name, document, email FROM owners WHERE document = ?";
+        String sql = "SELECT owner_id, name, document, email, active FROM owners WHERE document = ? AND document_type = 'CPF'";
 
         try (Connection connection = DriverManager.getConnection(jdbcUrl, user, password);
                 PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -47,7 +39,7 @@ public class OwnerRepository {
                         resultSet.getLong("owner_id"),
                         resultSet.getString("name"),
                         resultSet.getString("document"),
-                        resultSet.getString("email")));
+                        resultSet.getString("email"), resultSet.getBoolean("active")));
             }
         }
     }

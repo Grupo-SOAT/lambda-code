@@ -42,7 +42,7 @@ class ValidatorHandlerTest {
     void issuesTokenForKnownOwner() throws SQLException {
 
         when(ownerRepository.findByDocument("84779441056"))
-                .thenReturn(Optional.of(new Owner(1L, "Joao Silva", "84779441056", "joao@example.com")));
+                .thenReturn(Optional.of(new Owner(1L, "Joao Silva", "84779441056", "joao@example.com", true)));
         when(jwtService.issueClienteToken("84779441056", 1L)).thenReturn("signed-jwt");
 
         APIGatewayV2HTTPResponse response = handler.handleRequest(
@@ -137,4 +137,12 @@ class ValidatorHandlerTest {
         public void log(byte[] message) {
         }
     }
-}
+    @Test
+    void inactiveOwnerCannotReceiveToken() throws SQLException {
+        when(ownerRepository.findByDocument("84779441056"))
+            .thenReturn(Optional.of(new Owner(1L, "Joao", "84779441056", "j@example.com", false)));
+        var response = handler.handleRequest(authRequest("{\"cpf\":\"84779441056\"}"), context);
+        assertEquals(403, response.getStatusCode());
+        assertTrue(response.getBody().contains("CLIENT_INACTIVE"));
+        org.mockito.Mockito.verifyNoInteractions(jwtService);
+    }}
