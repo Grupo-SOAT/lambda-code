@@ -1,82 +1,64 @@
-name: Deploy Lambda
-
+name: Lambda CI and deploy
 on:
+  pull_request:
+    branches: [main, homologacao]
+  push:
+    branches: [main, homologacao]
   workflow_dispatch:
-
+permissions:
+  contents: read
+concurrency:
+  group: lambda-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
-
-  deploy-lambda:
-
-    name: Deploy Lambda
-
+  test:
     runs-on: ubuntu-latest
-
     steps:
-
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
+          distribution: temurin
           java-version: '21'
-          distribution: 'temurin'
           cache: maven
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - run: bash mvnw -B clean verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lambda-package
+          path: target/lambda-code.jar
+  deploy:
+    needs: test
+    if: github.repository == 'Grupo-SOAT/lambda-code' && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/homologacao')
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'producao' || 'homologacao' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: lambda-package
+          path: dist/lib
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: us-east-1
-
-      - name: Build Lambda
-        run: mvn clean package
-
-      - name: Package Lambda
-        run: |
-          mkdir -p dist
-
-          cp target/*.jar dist/
-
-          cd dist
-
-          zip oficina-mecanica-validator-${{ github.sha }}.zip *.jar
-
-      - name: Calculate Lambda Source Hash
-        id: lambda_hash
-        run: |
-          HASH=$(openssl dgst -sha256 -binary "dist/oficina-mecanica-validator-${{ github.sha }}.zip" | base64 -w 0)
-
-          echo "Lambda source hash: $HASH"
-
-          echo "source_hash=$HASH" >> "$GITHUB_OUTPUT"
-
-      - name: Upload Lambda Artifact to S3
-        run: |
-          aws s3 cp \
-            "dist/oficina-mecanica-validator-${{ github.sha }}.zip" \
-            "s3://${{ vars.TF_LAMBDA_BUCKET }}/oficina-mecanica-validator-${{ github.sha }}.zip"
-
-      - name: Trigger Infra Pipeline
+      - name: Publish tested package to both provisioned functions
         env:
-          GH_TOKEN: ${{ secrets.PAT_REPO_INFRA_LAMBDA }}
-          LAMBDA_HASH: ${{ steps.lambda_hash.outputs.source_hash }}
-          LAMBDA_KEY: oficina-mecanica-validator-${{ github.sha }}.zip
-          INFRA_REPO: k8s-infra-oficina-mecanica
-          ORG_NAME: Grupo-SOAT
+          BUCKET: ${{ vars.TF_LAMBDA_BUCKET }}
+          VALIDATOR: ${{ vars.LAMBDA_VALIDATOR_NAME }}
+          AUTHORIZER: ${{ vars.LAMBDA_AUTHORIZER_NAME }}
+          ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'producao' || 'homologacao' }}
         run: |
-          curl -L \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            "https://api.github.com/repos/${ORG_NAME}/${INFRA_REPO}/dispatches" \
-            -d '{
-              "event_type": "lambda-updated",
-              "client_payload": {
-                "lambda_hash": "'"${LAMBDA_HASH}"'",
-                "lambda_key": "'"${LAMBDA_KEY}"'"
-              }
-            }'
-            
+          set -euo pipefail
+          : "${BUCKET:?Configure TF_LAMBDA_BUCKET in the environment}"
+          : "${VALIDATOR:?Configure LAMBDA_VALIDATOR_NAME in the environment}"
+          : "${AUTHORIZER:?Configure LAMBDA_AUTHORIZER_NAME in the environment}"
+          # Both functions must already exist with handlers managed by Terraform.
+          aws lambda get-function-configuration --function-name "$VALIDATOR" >/dev/null
+          aws lambda get-function-configuration --function-name "$AUTHORIZER" >/dev/null
+          (cd dist && zip -r lambda.zip lib)
+          KEY="$ENVIRONMENT/$GITHUB_SHA/lambda.zip"
+          aws s3 cp dist/lambda.zip "s3://$BUCKET/$KEY"
+          for FUNCTION in "$VALIDATOR" "$AUTHORIZER"; do
+            aws lambda update-function-code --function-name "$FUNCTION" --s3-bucket "$BUCKET" --s3-key "$KEY" >/dev/null
+            aws lambda wait function-updated-v2 --function-name "$FUNCTION"
+          done

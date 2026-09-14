@@ -43,4 +43,15 @@ class JwtServiceTest {
         org.junit.jupiter.api.Assertions.assertThrows(Exception.class,
                 () -> Jwts.parser().verifyWith(wrongKey).build().parseSignedClaims(token));
     }
-}
+    @Test
+    void rejectsMissingExpiryAndWrongIssuerAndExpiredTokens() {
+        var service = new JwtService(SECRET);
+        var key = Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8));
+        var missingExpiry = Jwts.builder().subject("client").issuer("mechanic-workshop-system").signWith(key, Jwts.SIG.HS256).compact();
+        var wrongIssuer = Jwts.builder().subject("client").issuer("other").expiration(new java.util.Date(System.currentTimeMillis()+60000)).signWith(key, Jwts.SIG.HS256).compact();
+        var expired = Jwts.builder().subject("client").issuer("mechanic-workshop-system").expiration(new java.util.Date(1000)).signWith(key, Jwts.SIG.HS256).compact();
+        for (String token : List.of(missingExpiry, wrongIssuer, expired)) {
+            org.junit.jupiter.api.Assertions.assertThrows(io.jsonwebtoken.JwtException.class, () -> service.verify(token));
+        }
+        assertEquals("84779441056", service.verify(service.issueClienteToken("84779441056", 1L)).getSubject());
+    }}

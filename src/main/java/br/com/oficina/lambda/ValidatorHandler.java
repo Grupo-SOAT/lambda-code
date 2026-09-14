@@ -12,16 +12,12 @@ import java.sql.SQLException;
 import java.util.Optional;
 
 /**
- * Entry point da lambda unica (rota {@code $default} do API Gateway, ver
- * modules/aws/gateway no repo k8s-infra-oficina-mecanica):
- *
- * <ul>
- *   <li>{@code POST /auth/cpf} - valida o CPF, consulta a tabela
- *       {@code owners} e emite um JWT compativel com o monolito;</li>
- *   <li>qualquer outra rota - repassada como esta (proxy transparente) para
- *       o backend real ({@code BACKEND_URL}), que continua validando o JWT
- *       via seu proprio JwtAuthenticationFilter/RoleAuthorizationFilter.</li>
- * </ul>
+ * Entry point da lambda chamada pela rota {@code /auth} do API Gateway (ver
+ * modules/aws/gateway no repo k8s-infra-oficina-mecanica). Valida o CPF,
+ * consulta a tabela {@code owners} e emite um JWT compativel com o
+ * monolito. As demais rotas (protegidas) sao roteadas pelo API Gateway
+ * direto para o backend via integracao HTTP_PROXY, e autorizadas pelo
+ * {@link AuthorizerHandler} - esta lambda nao faz mais proxy de nada.
  */
 public class ValidatorHandler implements RequestHandler<APIGatewayV2HTTPEvent, APIGatewayV2HTTPResponse> {
 
@@ -30,7 +26,6 @@ public class ValidatorHandler implements RequestHandler<APIGatewayV2HTTPEvent, A
 
     private final OwnerRepository ownerRepository;
     private final JwtService jwtService;
-    private final BackendProxyService backendProxyService;
 
     public ValidatorHandler() {
 
@@ -45,13 +40,11 @@ public class ValidatorHandler implements RequestHandler<APIGatewayV2HTTPEvent, A
 
         this.ownerRepository = new OwnerRepository(dbHost, dbPort, dbName, dbUser, dbPassword);
         this.jwtService = new JwtService(jwtSecret);
-        this.backendProxyService = new HttpBackendProxyService(requireEnv("BACKEND_URL"));
     }
 
-    ValidatorHandler(OwnerRepository ownerRepository, JwtService jwtService, BackendProxyService backendProxyService) {
+    ValidatorHandler(OwnerRepository ownerRepository, JwtService jwtService) {
         this.ownerRepository = ownerRepository;
         this.jwtService = jwtService;
-        this.backendProxyService = backendProxyService;
     }
 
     @Override
@@ -62,11 +55,11 @@ public class ValidatorHandler implements RequestHandler<APIGatewayV2HTTPEvent, A
 
         context.getLogger().log("{\"path\":\"%s\",\"method\":\"%s\"}%n".formatted(path, method));
 
-        if ("POST".equalsIgnoreCase(method) && AUTH_PATH.equals(path)) {
-            return handleCpfAuth(event.getBody());
+        if (!"POST".equalsIgnoreCase(method) || !AUTH_PATH.equals(path)) {
+            return Responses.error(404, "NOT_FOUND", "Rota nao suportada por esta lambda");
         }
 
-        return backendProxyService.forward(event);
+        return handleCpfAuth(event.getBody());
     }
 
     private APIGatewayV2HTTPResponse handleCpfAuth(String requestBody) {
@@ -100,6 +93,7 @@ public class ValidatorHandler implements RequestHandler<APIGatewayV2HTTPEvent, A
             return Responses.error(404, "CLIENT_NOT_FOUND", "Cliente nao encontrado para o CPF informado");
         }
 
+        if (!owner.get().active()) return Responses.error(403, "CLIENT_INACTIVE", "Cliente inativo");
         String token = jwtService.issueClienteToken(owner.get().document(), owner.get().id());
 
         String body = """
