@@ -35,6 +35,21 @@ jobs:
         with:
           name: lambda-package
           path: dist/lib
+      - name: Validate required configuration
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          BUCKET: ${{ vars.TF_LAMBDA_BUCKET }}
+          VALIDATOR: ${{ vars.LAMBDA_VALIDATOR_NAME }}
+          AUTHORIZER: ${{ vars.LAMBDA_AUTHORIZER_NAME }}
+          INFRA_REPO_URL: ${{ vars.GIT_INFRA_REPO_URL }}
+          GH_TOKEN: ${{ secrets.PAT_REPO_INFRA_LAMBDA }}
+        run: |
+          : "${AWS_REGION:?Configure a variável AWS_REGION}"
+          : "${BUCKET:?Configure a variável TF_LAMBDA_BUCKET}"
+          : "${VALIDATOR:?Configure a variável LAMBDA_VALIDATOR_NAME}"
+          : "${AUTHORIZER:?Configure a variável LAMBDA_AUTHORIZER_NAME}"
+          : "${INFRA_REPO_URL:?Configure a variável GIT_INFRA_REPO_URL}"
+          : "${GH_TOKEN:?Configure o secret PAT_REPO_INFRA_LAMBDA}"
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -51,9 +66,6 @@ jobs:
           GH_TOKEN: ${{ secrets.PAT_REPO_INFRA_LAMBDA }}
         run: |
           set -euo pipefail
-          : "${BUCKET:?Configure TF_LAMBDA_BUCKET in the environment}"
-          : "${VALIDATOR:?Configure LAMBDA_VALIDATOR_NAME in the environment}"
-          : "${AUTHORIZER:?Configure LAMBDA_AUTHORIZER_NAME in the environment}"
 
           (cd dist && zip -r lambda.zip lib)
           KEY="$ENVIRONMENT/$GITHUB_SHA/lambda.zip"
@@ -62,18 +74,28 @@ jobs:
           HASH=$(openssl dgst -sha256 -binary dist/lambda.zip | base64 -w 0)
 
           for FUNCTION in "$VALIDATOR" "$AUTHORIZER"; do
-            if aws lambda get-function-configuration --function-name "$FUNCTION" >/dev/null 2>&1; then
+            set +e
+            ERROR=$(aws lambda get-function-configuration --function-name "$FUNCTION" 2>&1 >/dev/null)
+            RC=$?
+            set -e
+
+            if [ "$RC" -eq 0 ]; then
               echo "Atualizando $FUNCTION"
               aws lambda update-function-code --function-name "$FUNCTION" --s3-bucket "$BUCKET" --s3-key "$KEY" >/dev/null
               aws lambda wait function-updated-v2 --function-name "$FUNCTION"
-            else
+            elif printf '%s' "$ERROR" | grep -q "ResourceNotFoundException"; then
               echo "Função $FUNCTION ainda não existe; o Terraform irá criá-la com $KEY"
+            else
+              echo "$ERROR" >&2
+              exit "$RC"
             fi
           done
 
           INFRA_REPO="${INFRA_REPO_URL#https://github.com/}"
+          INFRA_REPO="${INFRA_REPO%.git}"
+          INFRA_REPO="${INFRA_REPO%/}"
 
-          curl -sS -L \
+          curl -sS -L --fail-with-body \
             -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GH_TOKEN}" \

@@ -526,6 +526,12 @@ No primeiro bootstrap as funções ainda não existem: o artefato é enviado ao 
 
 A conta AWS é descoberta via `sts get-caller-identity`; bucket e nomes das funções vêm das variáveis de organização `TF_LAMBDA_BUCKET`, `LAMBDA_VALIDATOR_NAME` e `LAMBDA_AUTHORIZER_NAME`.
 
+### Configuração necessária
+
+Variáveis (organização ou environment): `AWS_REGION`, `TF_LAMBDA_BUCKET`, `LAMBDA_VALIDATOR_NAME`, `LAMBDA_AUTHORIZER_NAME`, `GIT_INFRA_REPO_URL`.
+
+Secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `PAT_REPO_INFRA_LAMBDA`.
+
 ---
 
 ## 🔗 Integração com a infraestrutura
