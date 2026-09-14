@@ -6,7 +6,6 @@ import com.amazonaws.services.lambda.runtime.events.APIGatewayV2HTTPEvent;
 import com.amazonaws.services.lambda.runtime.events.APIGatewayV2HTTPResponse;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 
 import java.sql.SQLException;
 import java.util.Optional;
@@ -29,14 +28,12 @@ public class ValidatorHandler implements RequestHandler<APIGatewayV2HTTPEvent, A
 
     public ValidatorHandler() {
 
-        SecretsResolver secrets = new SecretsManagerResolver(SecretsManagerClient.create());
-
         String dbHost = requireEnv("DATABASE_HOST");
         int dbPort = Integer.parseInt(System.getenv().getOrDefault("DATABASE_PORT", "5432"));
         String dbName = System.getenv().getOrDefault("DATABASE_NAME", "workshop");
-        String dbUser = secrets.resolve(requireEnv("DATABASE_USER_SECRET_ARN"));
-        String dbPassword = secrets.resolve(requireEnv("DATABASE_PASSWORD_SECRET_ARN"));
-        String jwtSecret = secrets.resolve(requireEnv("JWT_SECRET_ARN"));
+        String dbUser = requireEnv("DATABASE_USER");
+        String dbPassword = requireEnv("DATABASE_PASSWORD");
+        String jwtSecret = requireEnv("JWT_SECRET");
 
         this.ownerRepository = new OwnerRepository(dbHost, dbPort, dbName, dbUser, dbPassword);
         this.jwtService = new JwtService(jwtSecret);
