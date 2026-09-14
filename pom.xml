@@ -23,25 +23,12 @@
     <jjwt.version>0.12.5</jjwt.version>
     <aws-lambda-java-core.version>1.2.3</aws-lambda-java-core.version>
     <aws-lambda-java-events.version>3.11.4</aws-lambda-java-events.version>
-    <aws-sdk-v2.version>2.25.60</aws-sdk-v2.version>
     <postgresql.version>42.7.3</postgresql.version>
     <jackson.version>2.17.0</jackson.version>
 
     <junit.version>5.10.2</junit.version>
     <mockito.version>5.11.0</mockito.version>
   </properties>
-
-  <dependencyManagement>
-    <dependencies>
-      <dependency>
-        <groupId>software.amazon.awssdk</groupId>
-        <artifactId>bom</artifactId>
-        <version>${aws-sdk-v2.version}</version>
-        <type>pom</type>
-        <scope>import</scope>
-      </dependency>
-    </dependencies>
-  </dependencyManagement>
 
   <dependencies>
     <!-- AWS Lambda runtime -->
@@ -54,12 +41,6 @@
       <groupId>com.amazonaws</groupId>
       <artifactId>aws-lambda-java-events</artifactId>
       <version>${aws-lambda-java-events.version}</version>
-    </dependency>
-
-    <!-- AWS Secrets Manager (credenciais do banco e do JWT) -->
-    <dependency>
-      <groupId>software.amazon.awssdk</groupId>
-      <artifactId>secretsmanager</artifactId>
     </dependency>
 
     <!-- JWT: mesma lib/versao do monolito, para garantir compatibilidade -->

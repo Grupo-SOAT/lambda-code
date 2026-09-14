@@ -20,7 +20,7 @@ Este repositório contém duas funções:
 * [Estrutura do projeto](#-estrutura-do-projeto)
 * [Endpoint de autenticação](#-endpoint-de-autenticação)
 * [Variáveis de ambiente](#-variáveis-de-ambiente)
-* [AWS Secrets Manager](#-aws-secrets-manager)
+* [Segredos](#-segredos)
 * [JWT](#-jwt)
 * [Lambda Authorizer](#-lambda-authorizer)
 * [Execução local](#-execução-local)
@@ -72,8 +72,7 @@ O API Gateway só invoca a `ValidatorHandler` na rota de autenticação. Nas dem
 | **API Gateway**           | Ponto de entrada HTTP; roteia `/auth` pra Lambda, o resto direto pro backend |
 | **`ValidatorHandler`**    | Validação de CPF e emissão do JWT                                          |
 | **`AuthorizerHandler`**   | Validação do JWT nas rotas de negócio (Lambda Authorizer)                  |
-| **Amazon RDS PostgreSQL** | Consulta dos clientes                                                       |
-| **AWS Secrets Manager**   | Armazenamento das credenciais e segredo JWT                                |
+| **Amazon RDS PostgreSQL** | Consulta dos clientes (VPC)                                                  |
 | **Amazon EKS**            | Execução do backend principal                                               |
 | **GitHub Actions**        | Automação do build e deploy da Lambda       |
 | **Amazon S3**             | Armazenamento do artefato da Lambda         |
@@ -166,15 +165,14 @@ Em caso de sucesso:
 * **AWS Lambda**
 * **Amazon API Gateway**
 * **Amazon RDS PostgreSQL**
-* **AWS Secrets Manager**
-* **AWS SDK for Java 2.x**
+* **Amazon VPC** (a `ValidatorHandler` roda na VPC; a `AuthorizerHandler` não)
 * **JJWT**
 * **Jackson**
 * **JUnit 5**
 * **Mockito**
 * **GitHub Actions**
 
-O projeto utiliza Java 21 e possui dependências específicas para execução no runtime da AWS Lambda, integração com Secrets Manager, PostgreSQL, JWT e testes automatizados.
+O projeto utiliza Java 21 e possui dependências específicas para execução no runtime da AWS Lambda, integração com PostgreSQL, JWT e testes automatizados.
 
 ---
 
@@ -300,15 +298,16 @@ O CPF pode ser enviado formatado ou somente com números.
 
 A Lambda utiliza as seguintes variáveis:
 
-| Variável                       | Obrigatória | Descrição                                                               |
-| ------------------------------ | ----------: | ----------------------------------------------------------------------- |
-| `DATABASE_HOST`                |           ✅ | Host do PostgreSQL                                                      |
-| `DATABASE_PORT`                |           ❌ | Porta do PostgreSQL. Padrão: `5432`                                     |
-| `DATABASE_NAME`                |           ❌ | Nome do banco. Padrão: `workshop`                                       |
-| `DATABASE_USER_SECRET_ARN`     |           ✅ | ARN do Secret Manager contendo o usuário do banco                       |
-| `DATABASE_PASSWORD_SECRET_ARN` |           ✅ | ARN do Secret Manager contendo a senha do banco                         |
-| `JWT_SECRET_ARN`               |           ✅ | ARN do Secret Manager contendo o segredo utilizado para assinar os JWTs |
-| `BACKEND_URL`                  |           ✅ | URL do backend executado no EKS                                         |
+| Variável            | Obrigatória | Descrição                                        |
+| ------------------- | ----------: | ------------------------------------------------ |
+| `DATABASE_HOST`     |           ✅ | Host do PostgreSQL (Amazon RDS)                  |
+| `DATABASE_PORT`     |           ❌ | Porta do PostgreSQL. Padrão: `5432`              |
+| `DATABASE_NAME`     |           ❌ | Nome do banco. Padrão: `workshop`                |
+| `DATABASE_USER`     |           ✅ | Usuário do banco                                 |
+| `DATABASE_PASSWORD` |           ✅ | Senha do banco                                   |
+| `JWT_SECRET`        |           ✅ | Segredo utilizado para assinar/validar os JWTs   |
+
+A `AuthorizerHandler` lê apenas `JWT_SECRET`. A `ValidatorHandler` lê todas as variáveis acima.
 
 Exemplo:
 
@@ -316,50 +315,20 @@ Exemplo:
 DATABASE_HOST=my-database.xxxxxx.us-east-1.rds.amazonaws.com
 DATABASE_PORT=5432
 DATABASE_NAME=workshop
-
-DATABASE_USER_SECRET_ARN=arn:aws:secretsmanager:us-east-1:123456789012:secret:...
-DATABASE_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:us-east-1:123456789012:secret:...
-JWT_SECRET_ARN=arn:aws:secretsmanager:us-east-1:123456789012:secret:...
-
-BACKEND_URL=http://backend-oficina-mecanica
+DATABASE_USER=db_admin
+DATABASE_PASSWORD=...
+JWT_SECRET=...
 ```
 
 > Os valores reais de credenciais e segredos **não devem ser armazenados no código-fonte ou no GitHub**.
 
 ---
 
-## 🔑 AWS Secrets Manager
+## 🔑 Segredos
 
-Informações sensíveis são recuperadas através do **AWS Secrets Manager**.
+As credenciais do banco e o segredo JWT **não são recuperados do AWS Secrets Manager**. O Terraform injeta os valores como **variáveis de ambiente** da função, a partir de GitHub Secrets de organização. A Lambda não busca segredos em runtime nem mantém cache de credenciais.
 
-A Lambda não recebe diretamente no código:
-
-* usuário do banco;
-* senha do banco;
-* segredo utilizado para assinatura do JWT.
-
-Durante a inicialização, o `ValidatorHandler` obtém os valores através dos respectivos Secrets Manager ARNs.
-
-```text
-Lambda
-   │
-   ├── DATABASE_USER_SECRET_ARN
-   │             │
-   │             ▼
-   │      AWS Secrets Manager
-   │
-   ├── DATABASE_PASSWORD_SECRET_ARN
-   │             │
-   │             ▼
-   │      AWS Secrets Manager
-   │
-   └── JWT_SECRET_ARN
-                 │
-                 ▼
-          AWS Secrets Manager
-```
-
-A role utilizada pela Lambda deve possuir as permissões necessárias para consultar esses secrets.
+A `ValidatorHandler` roda dentro da **VPC** (security group liberando apenas `5432` para o RDS e `443` para um VPC endpoint de CloudWatch Logs). A `AuthorizerHandler` não acessa banco nem rede.
 
 ---
 
@@ -393,7 +362,7 @@ Exemplo conceitual do payload:
 }
 ```
 
-O segredo utilizado para assinatura é recuperado do AWS Secrets Manager.
+O segredo utilizado para assinatura vem da variável de ambiente `JWT_SECRET` (mesmo valor configurado no monólito).
 
 ---
 
@@ -412,7 +381,7 @@ API Gateway ──────► AuthorizerHandler (valida o JWT)
    │        isAuthorized: true/false
    │◄───────────────────────┘
    │
-   │ (se autorizado) GET BACKEND_URL/owners/123
+   │ (se autorizado) GET backend/owners/123
    ▼
 Backend no EKS
 ```
@@ -536,37 +505,26 @@ A configuração atual do `pom.xml` foi preparada especificamente para gerar um 
 
 ## ☁️ Deploy na AWS
 
-O deploy da função é realizado utilizando infraestrutura AWS provisionada via Terraform.
-
-O fluxo geral é:
+O workflow **`Lambda CI and deploy`** (`.github/workflows/deploy.yaml`) roda testes em Pull Requests e, em push para `main` (environment `producao`) ou `homologacao`, publica o artefato e atualiza as funções:
 
 ```text
-GitHub
+GitHub (push main/homologacao)
    │
-   │ push / workflow_dispatch
    ▼
 GitHub Actions
    │
-   ├── Checkout
-   │
-   ├── Java 21
-   │
-   ├── Maven build
-   │
-   ├── mvn clean package
-   │
-   └── Upload do artefato
+   ├── Maven build (mvn clean verify)
+   ├── zip (lib/lambda-code.jar)
+   └── upload S3  →  <environment>/<sha>/lambda.zip
              │
-             ▼
-       Amazon S3
+             ├── se a função existe: update-function-code (validator + authorizer)
              │
-             ▼
-       AWS Lambda
+             └── repository_dispatch "lambda-updated" → k8s-infra-oficina-mecanica
 ```
 
-O artefato gerado pelo Maven é armazenado em um bucket S3 utilizado para disponibilizar o código da função.
+No primeiro bootstrap as funções ainda não existem: o artefato é enviado ao S3 e o `repository_dispatch` faz o Terraform criar as duas funções (`oficina-mecanica-validator` e `oficina-mecanica-jwt-authorizer`) já com esse código. Depois disso o workflow passa a atualizar o código diretamente. O Terraform mantém `handler`/configuração e ignora mudanças posteriores de `s3_key`/`source_code_hash`.
 
-A infraestrutura da Lambda é gerenciada separadamente pelo repositório de infraestrutura da aplicação.
+A conta AWS é descoberta via `sts get-caller-identity`; bucket e nomes das funções vêm das variáveis de organização `TF_LAMBDA_BUCKET`, `LAMBDA_VALIDATOR_NAME` e `LAMBDA_AUTHORIZER_NAME`.
 
 ---
 
@@ -581,29 +539,26 @@ A integração envolve:
 ```text
 lambda-code
      │
-     │ artefato Java
+     │ artefato Java (jar/zip)
      ▼
 Amazon S3
      │
      ▼
-AWS Lambda
+AWS Lambda  (recebe DATABASE_* e JWT_SECRET como env)
      │
-     ├──────────────► AWS Secrets Manager
+     ├──────────────► Amazon RDS PostgreSQL (via VPC)
      │
-     ├──────────────► Amazon RDS PostgreSQL
-     │
-     └──────────────► Backend no Amazon EKS
+     └──────────────► API Gateway (invocação + Lambda Authorizer)
 ```
 
-A infraestrutura Terraform é responsável por configurar recursos como:
+A infraestrutura Terraform (no repositório `k8s-infra-oficina-mecanica`) é responsável por configurar recursos como:
 
-* AWS Lambda;
-* IAM Role;
-* API Gateway;
-* S3;
-* Secrets Manager;
-* integração com o banco;
-* variáveis de ambiente.
+* AWS Lambda (as duas funções);
+* API Gateway + Lambda Authorizer;
+* S3 (bucket do artefato);
+* VPC/security groups/VPC endpoint de logs para a `validator`;
+* leitura do endpoint do RDS via `data.aws_db_instance`;
+* variáveis de ambiente (credenciais e `JWT_SECRET`).
 
 ---
 
@@ -613,7 +568,7 @@ Algumas práticas importantes adotadas neste projeto:
 
 ### Segredos fora do código
 
-Credenciais do banco e o segredo JWT são armazenados no AWS Secrets Manager.
+Credenciais do banco e o segredo JWT chegam como variáveis de ambiente injetadas pelo Terraform a partir de GitHub Secrets de organização; não há segredos versionados nem leitura de AWS Secrets Manager em runtime.
 
 ### JWT
 
@@ -634,14 +589,15 @@ WHERE document = ?
 A IAM Role da Lambda deve possuir somente as permissões necessárias para:
 
 * execução da função;
-* leitura dos Secrets Manager utilizados;
 * acesso aos recursos necessários à execução.
+
+A `ValidatorHandler` tem egress de rede restrito ao RDS (`5432`) e ao VPC endpoint de logs (`443`).
 
 ---
 
 ## ⚠️ Limitações conhecidas
 
-A autenticação consulta owners.active e bloqueia clientes inativos. Aplicar a migração documentada antes do deploy.
+A autenticação consulta `owners.active` e bloqueia clientes inativos. Em um banco novo a coluna `active` é criada automaticamente pelo Hibernate (`ddl-auto=update`, default `true`) junto com o seed; o script `docs/migrations/001-owner-active.sql` só é necessário para bancos pré-existentes criados antes dessa coluna.
 
 ---
 
@@ -676,49 +632,3 @@ Este repositório faz parte da solução **Oficina Mecânica – Tech Challenge 
 Este projeto está licenciado sob a licença **MIT**.
 
 Consulte o arquivo [`LICENSE`](./LICENSE) para mais informações.
-
-## Revisão da migração para Authorizer
-
-- Apenas POST /auth/cpf é enviado à ValidatorHandler. POST /auth/login,
-  /auth/chatbot e /auth/change-password continuam no monólito.
-- Rotas protegidas usam os nomes reais da API: owners, vehicles,
-  service-orders, catalog, supplies, suppliers, purchase-orders, users e reporting.
-- O cache do authorizer fica desativado por padrão; a expiração é conferida
-  a cada chamada. O monólito continua validando JWT, papéis e dono do recurso.
-- O ZIP de deploy contém somente lib/lambda-code.jar, com os dois handlers.
-- Publicar o novo artefato antes de aplicar a infraestrutura que referencia
-  AuthorizerHandler; implantar também o controle de dono no monólito.
-- Não foi validado deploy na AWS nesta revisão. Rede entre Lambda e RDS
-  privado permanece pendente por decisão do grupo. Terraform validate não
-  comprova conectividade, permissões IAM nem disponibilidade dos serviços.
-- A consulta atual de cliente verifica existência, não status ativo/inativo:
-  esse requisito foi implementado nesta revisão com owners.active.
-## Conclusão da autenticação por status e publicação
-
-A Lambda agora exige owners.active = true e document_type = CPF. Cliente
-inativo recebe 403 CLIENT_INACTIVE e não recebe token. Banco indisponível
-ou schema sem active falha fechado, sem emitir JWT.
-
-Antes de publicar a Lambda, executar docs/migrations/001-owner-active.sql
-no repositório mnl-oficina-mecanica com a credencial de migração. O script
-é reaplicável e define clientes existentes como ativos. Novos clientes
-nascem ativos. PATCH /owners/{id}/status com {"active":false} ou true é
-restrito a ADMIN. Edições comuns do cadastro preservam o status.
-Tokens já emitidos continuam válidos até expirar (30 minutos); desativar
-bloqueia novas autenticações, não implementa revogação instantânea.
-
-O workflow da Lambda testa PRs e publica automaticamente em push para main
-(producao) e homologacao (homologacao), somente no repositório Grupo-SOAT.
-Configurar os dois GitHub Environments com credenciais AWS e variáveis
-TF_LAMBDA_BUCKET, LAMBDA_VALIDATOR_NAME e LAMBDA_AUTHORIZER_NAME. Usar contas
-ou funções/buckets distintos para não sobrescrever produção. As funções
-precisam existir previamente via Terraform, com o novo artefato para o
-bootstrap. Após isso, o pipeline atualiza código e aguarda ambas as funções.
-Terraform mantém configuração/handlers e ignora alterações posteriores de
-s3_key/source_code_hash, cujo proprietário passa a ser esse pipeline.
-
-A configuração dos Environments e proteção das branches exige administrador
-da organização; a conta usada nesta entrega tem somente leitura nos repos
-originais. Não foram criadas credenciais nem disparados deploys nesta entrega.
-Rede Lambda/RDS privado mantida conforme combinado. A validação AWS permanece
-pendente e não é substituída pelos testes locais.

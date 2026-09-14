@@ -40,25 +40,50 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: us-east-1
-      - name: Publish tested package to both provisioned functions
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Publish tested package and notify infra
         env:
           BUCKET: ${{ vars.TF_LAMBDA_BUCKET }}
           VALIDATOR: ${{ vars.LAMBDA_VALIDATOR_NAME }}
           AUTHORIZER: ${{ vars.LAMBDA_AUTHORIZER_NAME }}
           ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'producao' || 'homologacao' }}
+          INFRA_REPO_URL: ${{ vars.GIT_INFRA_REPO_URL }}
+          GH_TOKEN: ${{ secrets.PAT_REPO_INFRA_LAMBDA }}
         run: |
           set -euo pipefail
           : "${BUCKET:?Configure TF_LAMBDA_BUCKET in the environment}"
           : "${VALIDATOR:?Configure LAMBDA_VALIDATOR_NAME in the environment}"
           : "${AUTHORIZER:?Configure LAMBDA_AUTHORIZER_NAME in the environment}"
-          # Both functions must already exist with handlers managed by Terraform.
-          aws lambda get-function-configuration --function-name "$VALIDATOR" >/dev/null
-          aws lambda get-function-configuration --function-name "$AUTHORIZER" >/dev/null
+
           (cd dist && zip -r lambda.zip lib)
           KEY="$ENVIRONMENT/$GITHUB_SHA/lambda.zip"
           aws s3 cp dist/lambda.zip "s3://$BUCKET/$KEY"
+
+          HASH=$(openssl dgst -sha256 -binary dist/lambda.zip | base64 -w 0)
+
           for FUNCTION in "$VALIDATOR" "$AUTHORIZER"; do
-            aws lambda update-function-code --function-name "$FUNCTION" --s3-bucket "$BUCKET" --s3-key "$KEY" >/dev/null
-            aws lambda wait function-updated-v2 --function-name "$FUNCTION"
+            if aws lambda get-function-configuration --function-name "$FUNCTION" >/dev/null 2>&1; then
+              echo "Atualizando $FUNCTION"
+              aws lambda update-function-code --function-name "$FUNCTION" --s3-bucket "$BUCKET" --s3-key "$KEY" >/dev/null
+              aws lambda wait function-updated-v2 --function-name "$FUNCTION"
+            else
+              echo "Função $FUNCTION ainda não existe; o Terraform irá criá-la com $KEY"
+            fi
           done
+
+          INFRA_REPO="${INFRA_REPO_URL#https://github.com/}"
+
+          curl -sS -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${INFRA_REPO}/dispatches" \
+            -d "{
+              \"event_type\": \"lambda-updated\",
+              \"client_payload\": {
+                \"lambda_key\": \"${KEY}\",
+                \"lambda_hash\": \"${HASH}\"
+              }
+            }"
+
+          echo "Artefato publicado e k8s-infra notificado."

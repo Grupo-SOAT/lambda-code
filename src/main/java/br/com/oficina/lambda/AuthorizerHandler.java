@@ -3,7 +3,6 @@ package br.com.oficina.lambda;
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import io.jsonwebtoken.Claims;
-import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 
 import java.util.List;
 import java.util.Map;
@@ -25,9 +24,7 @@ public class AuthorizerHandler implements RequestHandler<Map<String, Object>, Ma
     private final JwtService jwtService;
 
     public AuthorizerHandler() {
-        SecretsResolver secrets = new SecretsManagerResolver(SecretsManagerClient.create());
-        String jwtSecret = secrets.resolve(requireEnv("JWT_SECRET_ARN"));
-        this.jwtService = new JwtService(jwtSecret);
+        this.jwtService = new JwtService(requireEnv("JWT_SECRET"));
     }
 
     AuthorizerHandler(JwtService jwtService) {
